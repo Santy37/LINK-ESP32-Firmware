@@ -14,9 +14,11 @@ static BLEServer*         pServer         = nullptr;
 static BLECharacteristic* pTelemetryChar  = nullptr;
 static BLECharacteristic* pPinChar        = nullptr;
 static BLECharacteristic* pAckChar        = nullptr;
+static BLECharacteristic* pCalChar        = nullptr;
 static bool               _deviceConnected = false;
 static AckCallback        _ackCb           = nullptr;
 static ConnCallback       _connCb          = nullptr;
+static CalCallback        _calCb           = nullptr;
 
 // Server callbacks
 
@@ -59,6 +61,30 @@ class AckWriteCallback : public BLECharacteristicCallbacks {
   }
 };
 
+// Calibration characteristic write callback: { "qnhHPa": 1020.3 }
+class CalWriteCallback : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* pChar) override {
+    std::string raw = pChar->getValue();
+    if (raw.length() == 0) return;
+
+    Serial.printf("[BLE] CAL received: %s\n", raw.c_str());
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, raw);
+    if (err) {
+      Serial.printf("[BLE] CAL parse error: %s\n", err.c_str());
+      return;
+    }
+
+    if (doc.containsKey("qnhHPa")) {
+      float q = doc["qnhHPa"].as<float>();
+      if (q > 800.0f && q < 1100.0f && _calCb) {
+        _calCb(q);
+      }
+    }
+  }
+};
+
 // Public API
 
 void ble_init() {
@@ -90,6 +116,13 @@ void ble_init() {
     BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
   );
   pAckChar->setCallbacks(new AckWriteCallback());
+
+  // Calibration: Write (QNH sea-level pressure from phone weather API)
+  pCalChar = pService->createCharacteristic(
+    cfg::BLE_CAL_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  pCalChar->setCallbacks(new CalWriteCallback());
 
   pService->start();
   ble_startAdvertising();
@@ -128,4 +161,8 @@ void ble_onAck(AckCallback cb) {
 
 void ble_onConnection(ConnCallback cb) {
   _connCb = cb;
+}
+
+void ble_onCalibration(CalCallback cb) {
+  _calCb = cb;
 }

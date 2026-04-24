@@ -243,6 +243,17 @@ void setup() {
     }
   });
 
+#if HAS_BARO
+  /* Phone-supplied QNH (sea-level pressure from weather API) → calibrate baro.
+   * Marks baro as calibrated so state flips to OK and altitude becomes true MSL.
+   */
+  ble_onCalibration([](float qnhHPa) {
+    baro_setSeaLevel(qnhHPa);
+    baroCalibratedFromGps = true;   // prevents GPS loop from overriding immediately
+    Serial.printf("[MAIN] Baro calibrated from phone QNH: %.2f hPa\n", qnhHPa);
+  });
+#endif
+
   Serial.println("[MAIN] Setup complete — entering main loop\n");
 
 #if HAS_OLED

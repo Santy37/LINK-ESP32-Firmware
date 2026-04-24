@@ -21,6 +21,9 @@ using AckCallback = std::function<void(const String& pinId)>;
 /** Callback invoked when a phone connects / disconnects. */
 using ConnCallback = std::function<void(bool connected)>;
 
+/** Callback invoked when the phone writes a QNH (sea-level pressure) value. */
+using CalCallback = std::function<void(float qnhHPa)>;
+
 // Public API
 
 /** Initialise BLE stack, create GATT service, start advertising. */
@@ -43,3 +46,6 @@ void ble_onAck(AckCallback cb);
 
 /** Register callback for connection state changes. */
 void ble_onConnection(ConnCallback cb);
+
+/** Register callback for calibration (QNH) writes from the phone. */
+void ble_onCalibration(CalCallback cb);

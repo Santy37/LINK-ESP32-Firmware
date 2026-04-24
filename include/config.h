@@ -89,6 +89,7 @@ constexpr const char* BLE_SERVICE_UUID        = "4c494e4b-4855-4400-b000-0000000
 constexpr const char* BLE_TELEMETRY_CHAR_UUID = "4c494e4b-4855-4400-b000-000000000001";
 constexpr const char* BLE_PIN_CHAR_UUID       = "4c494e4b-4855-4400-b000-000000000002";
 constexpr const char* BLE_ACK_CHAR_UUID       = "4c494e4b-4855-4400-b000-000000000003";
+constexpr const char* BLE_CAL_CHAR_UUID       = "4c494e4b-4855-4400-b000-000000000004";
 
 // Timing
 constexpr unsigned long TELEMETRY_INTERVAL_MS = 200;   // 5 Hz streaming
