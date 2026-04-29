@@ -1,7 +1,7 @@
 /* IMU Driver — Adafruit BNO055 (9-DOF absolute orientation)
- *
- * Provides heading / pitch / roll via the on-chip sensor fusion.
- * Falls back to DEGRADED if calibration is poor.
+ 
+ Provides heading / pitch / roll via the on-chip sensor fusion.
+ Falls back to DEGRADED if calibration is poor.
  */
 
 #include "config.h"

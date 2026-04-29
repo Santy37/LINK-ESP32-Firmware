@@ -1,6 +1,6 @@
 /* GNSS Driver — u-blox NEO-M8N / NEO-6M via TinyGPS++
- *
- * Reads NMEA over UART2, exposes lat/lon/alt/accuracy/fix.
+ 
+ Reads NMEA over UART2, exposes lat/lon/alt/accuracy/fix.
  */
 
 #include "gnss_driver.h"

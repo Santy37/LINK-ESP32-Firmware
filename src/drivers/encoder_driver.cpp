@@ -1,8 +1,8 @@
 // L.I.N.K. — Rotary Encoder Driver (KY-040 / EC11)
 
 /* Uses polling-based quadrature state machine instead of interrupts.
- * Cheap mechanical encoders bounce too much for edge-triggered ISRs.
- * Button long-press (2.5 s) detected via polling.
+ Cheap mechanical encoders bounce too much for edge-triggered ISRs.
+ Button long-press (2.5 s) detected via polling.
  */
 
 #include "encoder_driver.h"
@@ -10,9 +10,9 @@
 #include "config.h"
 
 /* Quadrature state machine (polled, no ISR)
- * Gray code sequence for one CW detent:  00 → 01 → 11 → 10 → 00
- * The lookup table maps (prevState << 2 | currState) to direction.
- * +1 = CW step, -1 = CCW step, 0 = same or invalid (bounce).
+ Gray code sequence for one CW detent:  00 → 01 → 11 → 10 → 00
+ The lookup table maps (prevState << 2 | currState) to direction.
+ +1 = CW step, -1 = CCW step, 0 = same or invalid (bounce).
  */
 static const int8_t QUAD_TABLE[16] = {
    0, +1,  -1,  0,
@@ -22,17 +22,20 @@ static const int8_t QUAD_TABLE[16] = {
 };
 
 static uint8_t lastAB    = 0;   // previous 2-bit state (CLK<<1 | DT)
-static int8_t  quadSteps = 0;   // accumulated partial steps
-static int     rotCount  = 0;   // full-detent count (read by main loop)
+static int8_t  quadSteps = 0;   // accumulated partial steps within one detent
+static int     rotCount  = 0;   // full-detent count (read+cleared by main loop)
 
 /* EC11 typically has 4 Gray-code transitions per detent.
-   We only register a click after 4 accumulated same-direction steps. */
+ We only register a click after 4 accumulated same-direction steps.
+ This is also our cheap debounce — if the contacts bounce, the steps
+ cancel out instead of producing a phantom click.
+ */
 static constexpr int8_t STEPS_PER_DETENT = 4;
 
-// Button state machine
+// Button state machine — just enough to detect a clean long-press edge
 static bool     btnDown       = false;
 static unsigned long btnDownAt = 0;
-static bool     longPressFired = false;
+static bool     longPressFired = false;   // latch so we only fire once per hold
 
 
 void encoder_init() {
@@ -76,15 +79,17 @@ bool encoder_poll() {
 }
 
 int encoder_getRotation() {
-  // Sample current pin state
+  // Sample current pin state (CLK is high bit, DT is low bit)
   uint8_t curAB = (digitalRead(cfg::ENC_CLK_PIN) << 1) | digitalRead(cfg::ENC_DT_PIN);
 
   if (curAB != lastAB) {
+    // Lookup table tells us if this transition was CW (+1), CCW (-1),
+    // or invalid/bounce (0). prev state in upper bits, new state in lower.
     int8_t dir = QUAD_TABLE[(lastAB << 2) | curAB];
     lastAB = curAB;
     quadSteps += dir;
 
-    // One full detent reached?
+    // One full detent reached? (4 steps in the same direction)
     if (quadSteps >= STEPS_PER_DETENT) {
       quadSteps = 0;
       rotCount++;
@@ -94,6 +99,8 @@ int encoder_getRotation() {
     }
   }
 
+  // Read-and-clear pattern — caller gets net rotation since last poll,
+  // we reset so we don't double-count
   int val = rotCount;
   rotCount = 0;
   return val;

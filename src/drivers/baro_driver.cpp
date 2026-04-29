@@ -1,6 +1,6 @@
 /* Barometer Driver — BMP280 over I²C
- *
- * Provides pressure (hPa), temperature (°C), and barometric altitude.
+ 
+ Provides pressure (hPa), temperature (°C), and barometric altitude.
  */
 
 #include "config.h"
@@ -14,7 +14,7 @@ static Adafruit_BMP280 bmp(&Wire);
 static bool _initialised = false;
 static bool _calibrated  = false;   // true once GPS has set an absolute MSL reference
 
-/* Sea-level reference — starts at ISA standard; gets overwritten by GPS */
+// Sea-level reference — starts at ISA standard; gets overwritten by GPS
 static float _seaLevelHPa = 1013.25f;
 
 bool baro_init() {
@@ -26,7 +26,7 @@ bool baro_init() {
     }
   }
 
-  /* High-resolution oversampling for altitude accuracy */
+  // High-resolution oversampling for altitude accuracy
   bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
                   Adafruit_BMP280::SAMPLING_X16,   // temp
                   Adafruit_BMP280::SAMPLING_X16,   // pressure
@@ -35,7 +35,7 @@ bool baro_init() {
 
   _initialised = true;
 
-  /* Let the oversampling filter warm up so self-test reads a stable value */
+  // Let the oversampling filter warm up so self-test reads a stable value
   delay(100);
   for (int i = 0; i < 8; ++i) { (void)bmp.readPressure(); delay(20); }
 
@@ -82,9 +82,9 @@ BaroData baro_read() {
     d.state   = ModuleState::DEGRADED;
   } else {
     /* Always report an altitude using the current sea-level reference.
-     * Until GPS calibrates us, this is "pressure altitude" (ISA-standard,
-     * ±300 m worst case).  After GPS calibration, it's true MSL altitude.
-     * Either way, the baro is independently usable.
+     Until GPS calibrates us, this is "pressure altitude" (ISA-standard,
+     ±300 m worst case).  After GPS calibration, it's true MSL altitude.
+     Either way, the baro is independently usable.
      */
     d.altEstM = bmp.readAltitude(_seaLevelHPa);
     d.state   = ModuleState::OK;

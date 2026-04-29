@@ -6,22 +6,26 @@ static QueuedPin _queue[cfg::MAX_LOCAL_QUEUE];
 static int       _count = 0;
 
 bool pinQueue_enqueue(const String& id, const String& json) {
+  // Queue full? Make room by evicting the oldest un-ACK'd entry.
+  // ACK'd entries should already be pruned, but defensive check anyway.
   if (_count >= cfg::MAX_LOCAL_QUEUE) {
     Serial.println("[QUEUE] full — dropping oldest un-ACK'd pin");
-    // Drop the oldest un-ACK'd entry
     for (int i = 0; i < _count; i++) {
       if (!_queue[i].acked) {
-        // Shift everything down
+        // Shift everything after i down by one slot to fill the gap
         for (int j = i; j < _count - 1; j++) {
           _queue[j] = _queue[j + 1];
         }
         _count--;
-        break;
+        break;   // only drop one — we just need one slot
       }
     }
+    // Still no room? Then literally everything is ACK'd waiting to prune.
+    // Bail — caller can retry after the next prune pass.
     if (_count >= cfg::MAX_LOCAL_QUEUE) return false;
   }
 
+  // Stick the new pin at the end (newest = highest index)
   QueuedPin& e = _queue[_count++];
   e.id          = id;
   e.jsonPayload = json;
@@ -64,6 +68,9 @@ QueuedPin* pinQueue_getPending(int index) {
 }
 
 void pinQueue_prune() {
+  // Two-pointer compact: walk through with `read`, copy survivors
+  // (the un-ACK'd ones) down to `write`. Skips the gaps left by
+  // ACK'd pins without needing a second buffer.
   int write = 0;
   for (int read = 0; read < _count; read++) {
     if (!_queue[read].acked) {

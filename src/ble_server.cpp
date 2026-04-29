@@ -42,7 +42,7 @@ class ServerCallbacks : public BLEServerCallbacks {
 class AckWriteCallback : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* pChar) override {
     std::string raw = pChar->getValue();
-    if (raw.length() == 0) return;
+    if (raw.length() == 0) return;   // empty write — ignore
 
     Serial.printf("[BLE] ACK received: %s\n", raw.c_str());
 
@@ -50,10 +50,12 @@ class AckWriteCallback : public BLECharacteristicCallbacks {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, raw);
     if (err) {
+      // Phone sent garbage — just log and move on, don't crash the BLE stack
       Serial.printf("[BLE] ACK parse error: %s\n", err.c_str());
       return;
     }
 
+    // Hand the pinId off to main — main marks it ACK'd in the queue
     if (doc["ack"].as<bool>() && doc.containsKey("pinId")) {
       String pinId = doc["pinId"].as<String>();
       if (_ackCb) _ackCb(pinId);
@@ -62,6 +64,8 @@ class AckWriteCallback : public BLECharacteristicCallbacks {
 };
 
 // Calibration characteristic write callback: { "qnhHPa": 1020.3 }
+// Phone pulls QNH (sea-level pressure) from a weather API for the user's
+// current location and pushes it down so our barometer reads true MSL.
 class CalWriteCallback : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* pChar) override {
     std::string raw = pChar->getValue();
@@ -76,6 +80,9 @@ class CalWriteCallback : public BLECharacteristicCallbacks {
       return;
     }
 
+    // Sanity-check the value before passing it to the baro — anything
+    // outside the 800–1100 hPa range is either bogus or a hurricane,
+    // either way we don't want it touching the calibration
     if (doc.containsKey("qnhHPa")) {
       float q = doc["qnhHPa"].as<float>();
       if (q > 800.0f && q < 1100.0f && _calCb) {

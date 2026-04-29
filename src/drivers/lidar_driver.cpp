@@ -1,7 +1,7 @@
 /* LiDAR Driver — TFMini-Plus (UART)
- *
- * Reads distance and signal quality from the TFMini-Plus over UART1.
- * Protocol: 9-byte frames, header 0x59 0x59.
+ 
+ Reads distance and signal quality from the TFMini-Plus over UART1.
+ Protocol: 9-byte frames, header 0x59 0x59.
  */
 
 #include "config.h"
