@@ -1,19 +1,19 @@
 /* L.I.N.K. ESP32-S3 Firmware — main.cpp
- *
- * Boot sequence:
- *   1. Init serial + peripherals (I²C, UART)
- *   2. Init each sensor driver
- *   3. Run self-tests — degrade if any fail, warn via Serial (+ HUD later)
- *   4. Init BLE GATT server + start advertising
- *   5. Enter main loop:
- *      a. Poll sensors (20 Hz)
- *      b. Stream telemetry over BLE (5 Hz)
- *      c. On ping button → snapshot → compute waypoint → queue → BLE notify
- *      d. Retry un-ACK'd pins periodically
- *
- * Matches the phone-side pipeline in:
- *   hud-app/src/lib/ble.ts
- *   hud-app/src/lib/payloadTypes.ts
+ 
+   Boot sequence:
+     1. Init serial + peripherals (I²C, UART)
+     2. Init each sensor driver
+     3. Run self-tests — degrade if any fail, warn via Serial (+ HUD later)
+     4. Init BLE GATT server + start advertising
+     5. Enter main loop:
+        a. Poll sensors (20 Hz)
+        b. Stream telemetry over BLE (5 Hz)
+        c. On ping button → snapshot → compute waypoint → queue → BLE notify
+        d. Retry un-ACK'd pins periodically
+  
+   Matches the phone-side pipeline in:
+     hud-app/src/lib/ble.ts
+     hud-app/src/lib/payloadTypes.ts
  */
 
 #include <Arduino.h>
@@ -106,8 +106,8 @@ void setup() {
   Serial.begin(cfg::SERIAL_BAUD);
 
   /* Native USB CDC on ESP32-S3 needs time to enumerate after reset.
-   * Wait up to 3 seconds for a host to open the port, then continue
-   * headless so the firmware still boots without a PC attached.
+     Wait up to 3 seconds for a host to open the port, then continue
+     headless so the firmware still boots without a PC attached.
    */
   unsigned long usbWait = millis();
   while (!Serial && (millis() - usbWait < 3000)) { delay(10); }
@@ -144,6 +144,9 @@ void setup() {
 #if HAS_OLED
   if (oled.begin(SSD1306_SWITCHCAPVCC, cfg::OLED_ADDR)) {
     oledOk = true;
+    // Rotate display 180° (mounted upside-down so IMU sits chip-up)
+    oled.ssd1306_command(SSD1306_SEGREMAP);      // 0xA0: column address 0 → SEG0 (mirrors X)
+    oled.ssd1306_command(SSD1306_COMSCANINC);    // 0xC0: COM0 → COM[N-1] (mirrors Y)
     oled.ssd1306_command(SSD1306_SETCONTRAST);
     oled.ssd1306_command(0xFF);
     oled.clearDisplay();
@@ -245,7 +248,7 @@ void setup() {
 
 #if HAS_BARO
   /* Phone-supplied QNH (sea-level pressure from weather API) → calibrate baro.
-   * Marks baro as calibrated so state flips to OK and altitude becomes true MSL.
+     Marks baro as calibrated so state flips to OK and altitude becomes true MSL.
    */
   ble_onCalibration([](float qnhHPa) {
     baro_setSeaLevel(qnhHPa);

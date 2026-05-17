@@ -47,7 +47,7 @@ constexpr uint32_t I2C_FREQ = 400000;  // 400 kHz Fast-mode
 // GNSS (UART2) — GT-U7 (u-blox compatible, 9600 baud NMEA)
 constexpr int GNSS_RX = 16;   // ESP RX ← GPS TX
 constexpr int GNSS_TX = 17;   // ESP TX → GPS RX
-constexpr long GNSS_BAUD = 9600;
+constexpr long GNSS_BAUD = 38400;
 
 /* LiDAR (UART1) — TFMini-Plus or compatible
    GPIO 38 = onboard RGB LED — avoid! Using 47/48 instead.
