@@ -110,12 +110,16 @@ String pinPayload_toJson(const String& id,
 
   doc["label"] = label;
 
-  // Embed full telemetry
-  // (re-serialise and parse to nest it — ArduinoJson handles this)
-  String telJson = telemetry_toJson(t);
-  JsonDocument telDoc;
-  deserializeJson(telDoc, telJson);
-  doc["telemetry"] = telDoc.as<JsonObject>();
+  // Slim sensor-health summary so the server can record which modules were
+  // healthy at ping time. We deliberately do NOT embed the full telemetry
+  // snapshot — that blew past the BLE characteristic 600-byte indication
+  // cap and caused all pins to fail with "Size 6xx too large". Observer /
+  // target / aiming above carries the actual measurements.
+  JsonObject mods = doc["modules"].to<JsonObject>();
+  mods["imu"]   = moduleStateStr(t.imu.state);
+  mods["gnss"]  = moduleStateStr(t.gnss.state);
+  mods["baro"]  = moduleStateStr(t.baro.state);
+  mods["lidar"] = moduleStateStr(t.lidar.state);
 
   String out;
   serializeJson(doc, out);

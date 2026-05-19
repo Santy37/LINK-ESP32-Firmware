@@ -15,8 +15,8 @@ namespace cfg {
  */
 #define HAS_IMU    1    // BNO055 9-DOF — connected (I²C 0x28)
 #define HAS_BARO   1    // BMP280 — connected (I²C 0x76/0x77)
-#define HAS_LIDAR  0    // TFMini — not connected yet
-#define HAS_GNSS   1    // GT-U7 GPS — connected
+#define HAS_LIDAR  1    // PTYS-12X — connected (UART1)
+#define HAS_GNSS   1    // NEO-M9N GPS — connected
 #define HAS_OLED   1    // SSD1306 128x64 I²C OLED
 
 /* GPS-based baro calibration gate.
@@ -49,12 +49,16 @@ constexpr int GNSS_RX = 16;   // ESP RX ← GPS TX
 constexpr int GNSS_TX = 17;   // ESP TX → GPS RX
 constexpr long GNSS_BAUD = 38400;
 
-/* LiDAR (UART1) — TFMini-Plus or compatible
-   GPIO 38 = onboard RGB LED — avoid! Using 47/48 instead.
+/* LiDAR (UART1) — PTYS-12X (Benewake-style 8-byte framed protocol)
+   On ESP32-S3-WROOM-2 (N32R16V) DevKitC, GPIO 48 is the onboard WS2812
+   RGB LED — it fights any UART driver and pulls TX to ~1.8 V. Avoid it.
+   GPIO 21 is clean (no strapping, no USB, no PSRAM, no LED).
+   Baud is autodetected at boot from {115200, 9600, 38400, 57600}.
+   LIDAR_BAUD below is just the fallback if autodetect fails.
  */
-constexpr int LIDAR_RX = 47;  // ESP RX ← LiDAR TX
-constexpr int LIDAR_TX = 48;  // ESP TX → LiDAR RX
-constexpr long LIDAR_BAUD = 115200;
+constexpr int LIDAR_RX = 47;  // ESP RX ← LiDAR TX (PTYS pin 3, TTL_TXD)
+constexpr int LIDAR_TX = 21;  // ESP TX → LiDAR RX (PTYS pin 2, TTL_RXD)
+constexpr long LIDAR_BAUD = 115200;  // fallback only — see lidar_driver.cpp
 
 /* Rotary encoder (KY-040 or similar)
    Replaces the BOOT-button ping.  Rotate → change HUD page.
