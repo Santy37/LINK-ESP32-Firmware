@@ -17,7 +17,8 @@ namespace cfg {
 #define HAS_BARO   1    // BMP280 — connected (I²C 0x76/0x77)
 #define HAS_LIDAR  1    // PTYS-12X — connected (UART1)
 #define HAS_GNSS   1    // NEO-M9N GPS — connected
-#define HAS_OLED   1    // SSD1306 128x64 I²C OLED
+#define HAS_OLED   0    // SSD1306 128x64 I²C OLED  (legacy — disable when TFT proven)
+#define HAS_TFT    1    // ST7735 1.8" 128x160 RGB TFT (SPI)
 
 /* GPS-based baro calibration gate.
  Calibration only runs when the GPS fix is confident enough to trust
@@ -83,11 +84,29 @@ constexpr float BATT_VDIV_RATIO = 2.0; // R1 = R2 → ×2
 constexpr float BATT_FULL_V = 4.2;
 constexpr float BATT_EMPTY_V = 3.3;
 
-// HUD display — SSD1306 I²C OLED 128×64
+// HUD display — SSD1306 I²C OLED 128×64 (legacy)
 constexpr int OLED_WIDTH  = 128;
 constexpr int OLED_HEIGHT = 64;
 constexpr int OLED_ADDR   = 0x3C;  // common I²C address for SSD1306
 // Uses the same I²C bus as IMU/Baro (SDA/SCL above)
+
+/* HUD display — ST7735 1.8" 128×160 RGB TFT (SPI)
+   Pins below MUST match the TFT_eSPI build_flags in platformio.ini.
+   BL (backlight) is tied to 3.3 V on the module → no pin needed.
+   Uses HSPI (VSPI is on internal flash). Driven by TFT_eSPI library.
+
+   Rotation: 0/2 = portrait 128w × 160h; 1/3 = landscape 160w × 128h.
+ */
+constexpr int  TFT_PIN_SCLK  = 12;   // SPI clock
+constexpr int  TFT_PIN_MOSI  = 11;   // SPI MOSI (data)
+constexpr int  TFT_PIN_MISO  = -1;   // not used (display is write-only)
+constexpr int  TFT_PIN_CS    = 10;   // chip-select
+constexpr int  TFT_PIN_DC    = 14;   // data / command
+constexpr int  TFT_PIN_RST   = 15;   // reset
+constexpr int  TFT_PIN_BL    = -1;   // backlight tied to 3.3 V
+constexpr int  TFT_W         = 128;
+constexpr int  TFT_H         = 160;
+constexpr int  TFT_ROTATION  = 1;    // 1=landscape (160w x 128h). Use 3 if upside-down.
 
 // BLE
 constexpr const char* BLE_DEVICE_NAME = "LINK-HUD";

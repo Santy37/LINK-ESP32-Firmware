@@ -61,7 +61,15 @@ ImuData imu_read() {
   // Check calibration quality
   uint8_t sys, gyro, accel, mag;
   bno.getCalibration(&sys, &gyro, &accel, &mag);
-  d.state = (sys >= 2) ? ModuleState::OK : ModuleState::DEGRADED;
+  // Calibration tiers:
+  //   sys>=1            -> fusion is locked, full OK
+  //   gyro>=2 & accel>=1 -> stationary good (mag often stays uncalibrated
+  //                         indoors so sys lingers at 0; this lets us
+  //                         report OK once the gyro stabilizes).
+  //   else              -> DEGRADED (will refine once user moves a bit).
+  if (sys >= 1)                            d.state = ModuleState::OK;
+  else if (gyro >= 2 && accel >= 1)        d.state = ModuleState::OK;
+  else                                     d.state = ModuleState::DEGRADED;
 
   return d;
 }

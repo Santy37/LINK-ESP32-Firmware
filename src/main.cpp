@@ -44,6 +44,11 @@
   static bool oledOk = false;
 #endif
 
+// TFT display (ST7735 1.8" 128x160)
+#if HAS_TFT
+  #include "drivers/tft_driver.h"
+#endif
+
 // Rotary encoder
 #if HAS_ENCODER
   #include "drivers/encoder_driver.h"
@@ -65,10 +70,24 @@ static unsigned long lastPingMs        = 0;   // debounce
 static bool baroCalibratedFromGps     = false;
 
 // HUD page state
-static const int HUD_PAGE_COUNT = 5;
+static const int HUD_PAGE_COUNT = 6;
 static int       hudPage        = 0;   // 0..4
 static bool      pingHoldActive = false;
 static unsigned long pingHoldStart = 0;
+// Sensor states captured at the moment the ping-hold began — used to detect
+// a mid-hold sensor failure and cancel the ping with a warning to the user.
+static ModuleState pingHoldImuStart   = ModuleState::FAIL;
+static ModuleState pingHoldGnssStart  = ModuleState::FAIL;
+static ModuleState pingHoldBaroStart  = ModuleState::FAIL;
+static ModuleState pingHoldLidarStart = ModuleState::FAIL;
+static unsigned long pingAbortMs   = 0;        // 0 = no abort active
+static const char*   pingAbortReason = "";
+static unsigned long pingSentMs    = 0;        // 0 = no confirmation active
+static int           pingSentQueued = 0;
+// True after a ping fires/aborts on the current button hold; cleared on
+// release.  Prevents the hold loop from re-arming while the user is still
+// pressing the button (which caused the progress ring to cycle twice).
+static bool          pingHoldConsumed = false;
 
 // Latest sensor snapshot
 static TelemetrySnapshot snap;
@@ -158,6 +177,16 @@ void setup() {
     Serial.println("[OLED] SSD1306 initialised OK");
   } else {
     Serial.printf("[OLED] SSD1306 not found at 0x%02X — FAIL\n", cfg::OLED_ADDR);
+  }
+#endif
+
+  // TFT display (ST7735) — SPI, independent from I²C bus
+#if HAS_TFT
+  if (tft::init()) {
+    tft::renderBootSplash();
+    Serial.println("[TFT]  ST7735 initialised OK");
+  } else {
+    Serial.println("[TFT]  ST7735 init FAILED");
   }
 #endif
 
@@ -269,6 +298,9 @@ void setup() {
     oled.display();
   }
 #endif
+#if HAS_TFT
+  tft::renderReadyScreen(gnssOk);
+#endif
 }
 
 // LOOP — sensor polling, telemetry streaming, ping handling, retries
@@ -364,17 +396,63 @@ void loop() {
 
     // Show hold feedback on OLED while button is physically held
     bool btnHeld = (digitalRead(cfg::ENC_SW_PIN) == LOW);
-    if (btnHeld && !pingHoldActive) {
-      pingHoldActive = true;
-      pingHoldStart  = now;
-    }
     if (!btnHeld) {
-      pingHoldActive = false;
+      pingHoldActive   = false;
+      pingHoldConsumed = false;   // re-arm for next press
+    }
+    if (btnHeld && !pingHoldActive && !pingHoldConsumed) {
+      // Refuse to start the ping if any sensor is already non-OK — surface
+      // the abort screen instead so the user knows why.
+      const char* badNow = nullptr;
+      if      (snap.imu.state   != ModuleState::OK) badNow = "IMU";
+      else if (snap.gnss.state  != ModuleState::OK) badNow = "GNSS";
+      else if (snap.baro.state  != ModuleState::OK) badNow = "BARO";
+      else if (snap.lidar.state != ModuleState::OK) badNow = "LIDAR";
+      if (badNow) {
+        Serial.printf("[PING] refused: %s not OK\n", badNow);
+        pingAbortMs      = now;
+        pingAbortReason  = badNow;
+        pingHoldConsumed = true;
+      } else {
+        pingHoldActive    = true;
+        pingHoldStart     = now;
+        pingHoldImuStart   = snap.imu.state;
+        pingHoldGnssStart  = snap.gnss.state;
+        pingHoldBaroStart  = snap.baro.state;
+        pingHoldLidarStart = snap.lidar.state;
+      }
     }
 
-    if (longPress && (now - lastPingMs) > cfg::DEBOUNCE_MS) {
-      lastPingMs = now;
+    // Mid-hold sensor health check — any drop from OK to DEGRADED or FAIL
+    // cancels the ping and surfaces a 2-second abort screen.
+    if (pingHoldActive) {
+      auto degraded = [](ModuleState s0, ModuleState now_) {
+        return s0 == ModuleState::OK && now_ != ModuleState::OK;
+      };
+      const char* reason = nullptr;
+      if      (degraded(pingHoldImuStart,   snap.imu.state))   reason = "IMU";
+      else if (degraded(pingHoldGnssStart,  snap.gnss.state))  reason = "GNSS";
+      else if (degraded(pingHoldBaroStart,  snap.baro.state))  reason = "BARO";
+      else if (degraded(pingHoldLidarStart, snap.lidar.state)) reason = "LIDAR";
+      if (reason) {
+        Serial.printf("[PING] aborted mid-hold: %s dropped from OK\n", reason);
+        pingHoldActive   = false;
+        pingHoldConsumed = true;
+        pingAbortMs      = now;
+        pingAbortReason  = reason;
+      }
+    }
+
+    // Only honour the long-press if the hold was still active when it
+    // completed — i.e. it wasn't already aborted by a sensor going non-OK.
+    if (longPress && pingHoldActive &&
+        (now - lastPingMs) > cfg::DEBOUNCE_MS) {
+      lastPingMs       = now;
+      pingHoldActive   = false;
+      pingHoldConsumed = true;
       handlePing();
+      pingSentMs     = now;
+      pingSentQueued = pinQueue_pendingCount();
     }
   }
 #else
@@ -546,6 +624,47 @@ void loop() {
     oled.display();
   }
 #endif
+
+  // 6. Update TFT display — home page refreshes at 10 Hz so the live
+  // compass strip tracks user rotation; other pages stay at 2 Hz to
+  // save SPI bandwidth.
+#if HAS_TFT
+  static unsigned long lastTft = 0;
+  // 100 ms on home (page 0) and during ping-hold/abort overlays for smooth
+  // animations; 150 ms on the static detail pages so live values update at
+  // ~6.6 Hz instead of 2 Hz.
+  bool abortActive = (pingAbortMs && (now - pingAbortMs < 2000));
+  bool sentActive  = (pingSentMs  && (now - pingSentMs  < 1500));
+  unsigned long tftPeriod =
+#if HAS_ENCODER
+      (pingHoldActive || abortActive || sentActive || hudPage == 0) ? 100UL : 150UL;
+#else
+      (hudPage == 0) ? 100UL : 150UL;
+#endif
+  if (tft::isReady() && now - lastTft >= tftPeriod) {
+    lastTft = now;
+#if HAS_ENCODER
+    if (pingHoldActive) {
+      unsigned long held = now - pingHoldStart;
+      int pct = constrain((int)(held * 100 / cfg::ENC_LONG_PRESS_MS), 0, 100);
+      tft::renderPingHold((uint8_t)pct);
+    } else if (sentActive) {
+      tft::renderPingSent(pingSentQueued);
+    } else if (abortActive) {
+      tft::renderPingAbort(pingAbortReason);
+    } else {
+      // Overlay windows expired — reset and resume normal pages.
+      if (pingAbortMs && now - pingAbortMs >= 2000) pingAbortMs = 0;
+      if (pingSentMs  && now - pingSentMs  >= 1500) pingSentMs  = 0;
+      tft::renderPage(hudPage, HUD_PAGE_COUNT, snap,
+                      ble_isConnected(), pinQueue_pendingCount());
+    }
+#else
+    tft::renderPage(hudPage, HUD_PAGE_COUNT, snap,
+                    ble_isConnected(), pinQueue_pendingCount());
+#endif
+  }
+#endif
 }
 
 // handlePing — user pressed the ping button
@@ -558,6 +677,9 @@ void handlePing() {
     Serial.println("[PING] GNSS not available — cannot compute waypoint");
 #if HAS_OLED
     if (oledOk) { oled.clearDisplay(); oled.setCursor(0,0); oled.println("PING FAIL"); oled.println("No GPS fix!"); oled.display(); }
+#endif
+#if HAS_TFT
+    tft::renderPingFail("No GPS fix!");
 #endif
     return;
   }
