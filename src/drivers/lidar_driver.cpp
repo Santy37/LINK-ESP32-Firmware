@@ -63,10 +63,12 @@ constexpr size_t   BAUD_COUNT        = sizeof(BAUD_CANDIDATES) / sizeof(BAUD_CAN
 constexpr uint32_t REARM_TIMEOUT_MS  = 5000;
 
 // Sensor power-on boot time. The PTYS-12X internal MCU needs roughly
-// 500–800 ms after VCC rises before it will accept UART commands. ESP32-S3
-// boots faster than that, so without this delay every cold-boot autodetect
-// fails and the user has to hit reset.
-constexpr uint32_t SENSOR_BOOT_MS    = 1000;
+// 500–800 ms after VCC rises before it will accept UART commands — but on
+// a cold boot from a fully-discharged input cap, the 5 V rail ramps slowly
+// and the sensor's own brown-out recovery can push that to >1.5 s. The
+// ESP32-S3 boots much faster than that, so without a generous settle the
+// first autodetect window misses every cold start.
+constexpr uint32_t SENSOR_BOOT_MS    = 1800;
 
 HardwareSerial lidarSerial(1);    // UART1
 
@@ -110,15 +112,24 @@ bool isRangingCmd(uint8_t c) {
          c == CMD_CALIB;
 }
 
-// Try a single baud rate by poking the sensor and listening briefly.
-// Returns true on first valid frame seen.
+// Try a single baud rate by kicking the sensor into continuous mode and
+// listening briefly. We deliberately use CMD_CONT_10HZ instead of
+// CMD_SINGLE here: the cold-start failure mode on this PTYS-12X variant
+// is that CMD_SINGLE produces no reply when the sensor boots into idle,
+// while CMD_CONT_10HZ reliably starts a frame stream. (Post-soft-reset
+// the sensor is already streaming from the previous run, which is why
+// hitting RST always made autodetect succeed instantly — we were just
+// catching the leftover stream, not actually getting a CMD_SINGLE reply.)
 bool probeBaud(uint32_t baud, uint32_t windowMs) {
   lidarSerial.end();
   delay(50);
   lidarSerial.begin(baud, SERIAL_8N1, cfg::LIDAR_RX, cfg::LIDAR_TX);
   delay(80);
 
-  sendFrame(CMD_SINGLE);
+  // Drain any boot-time noise so it can't masquerade as a frame header.
+  while (lidarSerial.available()) lidarSerial.read();
+
+  sendFrame(CONT_MODE_CMD);
 
   uint8_t buf[8] = {0};
   size_t  filled = 0;
@@ -140,7 +151,15 @@ bool probeBaud(uint32_t baud, uint32_t windowMs) {
 }
 
 uint32_t autodetectBaud() {
+  // Try the configured baud first — on a stable installation we know which
+  // baud the sensor uses, so checking it first turns the common case into
+  // a single short probe instead of cycling through all four candidates.
+  Serial.printf("[LIDAR] probing configured baud %lu ...\n",
+                (unsigned long)cfg::LIDAR_BAUD);
+  if (probeBaud(cfg::LIDAR_BAUD, 1200)) return cfg::LIDAR_BAUD;
+
   for (size_t i = 0; i < BAUD_COUNT; i++) {
+    if (BAUD_CANDIDATES[i] == cfg::LIDAR_BAUD) continue;  // already tried
     Serial.printf("[LIDAR] probing baud %lu ...\n",
                   (unsigned long)BAUD_CANDIDATES[i]);
     if (probeBaud(BAUD_CANDIDATES[i], 700)) {
@@ -210,26 +229,39 @@ void drainAndParse() {
 bool lidar_init() {
   Serial.println("[LIDAR] PTYS-12X init: waiting for sensor boot...");
 
+  // CRITICAL: bring up our UART BEFORE the boot delay so the TX line going
+  // to the LiDAR's RX is driven idle-high while the sensor MCU boots.
+  // If we don't, that pin floats during the delay, the LiDAR sees noise on
+  // its RX during its own boot window, and its UART parser locks up — which
+  // is the cold-start "needs reset to work" symptom. (After a soft reset
+  // the pin is already idle-high from the previous run, masking the bug.)
+  lidarSerial.begin(cfg::LIDAR_BAUD, SERIAL_8N1, cfg::LIDAR_RX, cfg::LIDAR_TX);
+
   // Give the sensor's internal MCU time to fully boot before poking it.
   // Without this, ~every cold-boot the ESP32 wins the race and autodetect
   // fails until the user hits the reset button.
   delay(SENSOR_BOOT_MS);
 
-  // Try autodetect up to 3 times, with extra settling between attempts.
-  // Most coldboots succeed on attempt 1 after SENSOR_BOOT_MS; the retries
-  // are insurance for a slow / brown-out-recovering sensor.
+  // Drain any garbage bytes accumulated during the LiDAR's boot (e.g. a
+  // boot banner or framing errors clocked in while VCC was still ramping).
+  while (lidarSerial.available()) lidarSerial.read();
+
+  // Try autodetect up to 5 times, with extra settling between attempts.
+  // Most coldboots succeed on attempt 1 after SENSOR_BOOT_MS; the extra
+  // retries are insurance against slow-ramping 5 V rails and brown-out
+  // recovery on cold starts.
   uint32_t baud = 0;
-  for (int attempt = 1; attempt <= 3 && baud == 0; attempt++) {
-    Serial.printf("[LIDAR] autodetect attempt %d/3 ...\n", attempt);
+  for (int attempt = 1; attempt <= 5 && baud == 0; attempt++) {
+    Serial.printf("[LIDAR] autodetect attempt %d/5 ...\n", attempt);
     baud = autodetectBaud();
-    if (baud == 0 && attempt < 3) {
-      Serial.println("[LIDAR] no response — settling 500 ms before retry");
-      delay(500);
+    if (baud == 0 && attempt < 5) {
+      Serial.println("[LIDAR] no response — settling 800 ms before retry");
+      delay(800);
     }
   }
 
   if (baud == 0) {
-    Serial.printf("[LIDAR] autodetect failed after 3 attempts, falling back to %ld\n",
+    Serial.printf("[LIDAR] autodetect failed after 5 attempts, falling back to %ld\n",
                   cfg::LIDAR_BAUD);
     baud = cfg::LIDAR_BAUD;
     lidarSerial.end();
