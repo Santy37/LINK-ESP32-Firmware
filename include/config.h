@@ -61,15 +61,17 @@ constexpr int LIDAR_RX = 47;  // ESP RX ← LiDAR TX (PTYS pin 3, TTL_TXD)
 constexpr int LIDAR_TX = 21;  // ESP TX → LiDAR RX (PTYS pin 2, TTL_RXD)
 constexpr long LIDAR_BAUD = 115200;  // fallback only — see lidar_driver.cpp
 
-/* Rotary encoder (KY-040 or similar)
-   Replaces the BOOT-button ping.  Rotate → change HUD page.
-   Long-press (2.5 s) → trigger ping.
+/* HUD control buttons (3× momentary tactile, active-LOW with INPUT_PULLUP)
+   PREV → cycle HUD page backwards.
+   NEXT → cycle HUD page forwards.
+   PING → hold for PING_HOLD_MS to drop a waypoint pin.
+   Pins 4 / 5 / 7 are reused from the previous rotary-encoder wiring.
  */
-#define HAS_ENCODER 1
-constexpr int ENC_CLK_PIN = 4;         // Channel A (CLK)
-constexpr int ENC_DT_PIN  = 5;         // Channel B (DT)
-constexpr int ENC_SW_PIN  = 7;         // Push-button (active-LOW)
-constexpr unsigned long ENC_LONG_PRESS_MS = 2500;  // hold duration for ping
+#define HAS_BUTTONS 1
+constexpr int BTN_PREV_PIN = 4;        // page --
+constexpr int BTN_NEXT_PIN = 5;        // page ++
+constexpr int BTN_PING_PIN = 7;        // hold to ping
+constexpr unsigned long PING_HOLD_MS = 2500;  // hold duration for ping
 
 // Ping button (legacy — kept as fallback if encoder absent)
 constexpr int PING_BTN_PIN = 0;        // active-LOW (built-in BOOT btn)

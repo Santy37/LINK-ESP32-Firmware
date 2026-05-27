@@ -49,9 +49,9 @@
   #include "drivers/tft_driver.h"
 #endif
 
-// Rotary encoder
-#if HAS_ENCODER
-  #include "drivers/encoder_driver.h"
+// HUD control buttons (3× momentary, active-LOW)
+#if HAS_BUTTONS
+  // No external driver — polling is inline in loop() below.
 #endif
 
 // BLE + logic
@@ -141,9 +141,14 @@ void setup() {
   // Ping button (fallback)
   pinMode(cfg::PING_BTN_PIN, INPUT_PULLUP);
 
-  // Rotary encoder
-#if HAS_ENCODER
-  encoder_init();
+  // HUD control buttons
+#if HAS_BUTTONS
+  pinMode(cfg::BTN_PREV_PIN, INPUT_PULLUP);
+  pinMode(cfg::BTN_NEXT_PIN, INPUT_PULLUP);
+  pinMode(cfg::BTN_PING_PIN, INPUT_PULLUP);
+  Serial.printf("[BTN]  PREV=%d  NEXT=%d  PING=%d  hold=%lums\n",
+                cfg::BTN_PREV_PIN, cfg::BTN_NEXT_PIN, cfg::BTN_PING_PIN,
+                cfg::PING_HOLD_MS);
 #endif
 
   // Turn off onboard RGB LED (GPIO 38)
@@ -380,22 +385,63 @@ void loop() {
     }
   }
 
-  // 3. Rotary encoder: page change + long-press ping
-#if HAS_ENCODER
+  // 3. HUD buttons: PREV / NEXT cycle pages, PING-hold drops a waypoint.
+#if HAS_BUTTONS
   {
-    // Rotation → cycle HUD pages (clamp to ±1 so one click = one page)
-    int rot = encoder_getRotation();
-    if (rot != 0) {
-      rot = (rot > 0) ? 1 : -1;
-      hudPage = (hudPage + rot + HUD_PAGE_COUNT) % HUD_PAGE_COUNT;
-      Serial.printf("[ENC]  Page → %d\n", hudPage);
+    // --- Edge-detected page buttons ---------------------------------------
+    // Tactile switches bounce for a few ms on press — a tiny debounce window
+    // catches the first clean LOW and ignores subsequent transitions until
+    // the button is released and re-pressed.
+    static bool prevDown = false;
+    static bool nextDown = false;
+    static unsigned long prevEdgeMs = 0;
+    static unsigned long nextEdgeMs = 0;
+    constexpr unsigned long BTN_DEBOUNCE_MS = 30;
+
+    bool prevRaw = (digitalRead(cfg::BTN_PREV_PIN) == LOW);
+    bool nextRaw = (digitalRead(cfg::BTN_NEXT_PIN) == LOW);
+
+    if (prevRaw && !prevDown && (now - prevEdgeMs) > BTN_DEBOUNCE_MS) {
+      prevDown   = true;
+      prevEdgeMs = now;
+      hudPage = (hudPage - 1 + HUD_PAGE_COUNT) % HUD_PAGE_COUNT;
+      Serial.printf("[BTN]  Page ← %d\n", hudPage);
+    } else if (!prevRaw && prevDown) {
+      prevDown   = false;
+      prevEdgeMs = now;
     }
 
-    // Long-press → trigger ping
-    bool longPress = encoder_poll();
+    if (nextRaw && !nextDown && (now - nextEdgeMs) > BTN_DEBOUNCE_MS) {
+      nextDown   = true;
+      nextEdgeMs = now;
+      hudPage = (hudPage + 1) % HUD_PAGE_COUNT;
+      Serial.printf("[BTN]  Page → %d\n", hudPage);
+    } else if (!nextRaw && nextDown) {
+      nextDown   = false;
+      nextEdgeMs = now;
+    }
 
-    // Show hold feedback on OLED while button is physically held
-    bool btnHeld = (digitalRead(cfg::ENC_SW_PIN) == LOW);
+    // --- Ping button: hold for PING_HOLD_MS -------------------------------
+    bool btnHeld = (digitalRead(cfg::BTN_PING_PIN) == LOW);
+
+    static unsigned long pingBtnDownAt   = 0;
+    static bool          pingLongFired   = false;
+    static bool          pingPrevPressed = false;
+    if (btnHeld && !pingPrevPressed) {
+      // Falling edge — start of a new press.
+      pingBtnDownAt = now;
+      pingLongFired = false;
+    }
+    pingPrevPressed = btnHeld;
+
+    bool longPress = false;
+    if (btnHeld && !pingLongFired &&
+        (now - pingBtnDownAt) >= cfg::PING_HOLD_MS) {
+      pingLongFired = true;
+      longPress     = true;
+    }
+
+    // Show hold feedback while the ping button is physically held.
     if (!btnHeld) {
       pingHoldActive   = false;
       pingHoldConsumed = false;   // re-arm for next press
@@ -524,10 +570,10 @@ void loop() {
     oled.setCursor(0, 0);
 
     // Ping-hold overlay (takes over entire screen)
-#if HAS_ENCODER
+#if HAS_BUTTONS
     if (pingHoldActive) {
       unsigned long held = now - pingHoldStart;
-      int pct = constrain((int)(held * 100 / cfg::ENC_LONG_PRESS_MS), 0, 100);
+      int pct = constrain((int)(held * 100 / cfg::PING_HOLD_MS), 0, 100);
       oled.setTextSize(1);
       oled.println();
       oled.println("  CONFIRMING PING");
@@ -636,17 +682,17 @@ void loop() {
   bool abortActive = (pingAbortMs && (now - pingAbortMs < 2000));
   bool sentActive  = (pingSentMs  && (now - pingSentMs  < 1500));
   unsigned long tftPeriod =
-#if HAS_ENCODER
+#if HAS_BUTTONS
       (pingHoldActive || abortActive || sentActive || hudPage == 0) ? 100UL : 150UL;
 #else
       (hudPage == 0) ? 100UL : 150UL;
 #endif
   if (tft::isReady() && now - lastTft >= tftPeriod) {
     lastTft = now;
-#if HAS_ENCODER
+#if HAS_BUTTONS
     if (pingHoldActive) {
       unsigned long held = now - pingHoldStart;
-      int pct = constrain((int)(held * 100 / cfg::ENC_LONG_PRESS_MS), 0, 100);
+      int pct = constrain((int)(held * 100 / cfg::PING_HOLD_MS), 0, 100);
       tft::renderPingHold((uint8_t)pct);
     } else if (sentActive) {
       tft::renderPingSent(pingSentQueued);
