@@ -1,4 +1,4 @@
-/* Barometer Driver — BMP280 over I²C
+/* Barometer Driver — BME280 over I²C
  
  Provides pressure (hPa), temperature (°C), and barometric altitude.
  */
@@ -7,10 +7,10 @@
 #if HAS_BARO
 
 #include "baro_driver.h"
-#include <Adafruit_BMP280.h>
+#include <Adafruit_BME280.h>
 #include <Wire.h>
 
-static Adafruit_BMP280 bmp(&Wire);
+static Adafruit_BME280 bmp;
 static bool _initialised = false;
 static bool _calibrated  = false;   // true once GPS has set an absolute MSL reference
 
@@ -18,20 +18,21 @@ static bool _calibrated  = false;   // true once GPS has set an absolute MSL ref
 static float _seaLevelHPa = 1013.25f;
 
 bool baro_init() {
-  if (!bmp.begin(0x76)) {       // try 0x76 first, then 0x77
-    if (!bmp.begin(0x77)) {
-      Serial.println("[BARO] BMP280 not found — FAIL");
+  if (!bmp.begin(0x76, &Wire)) {       // try 0x76 first, then 0x77
+    if (!bmp.begin(0x77, &Wire)) {
+      Serial.println("[BARO] BME280 not found — FAIL");
       _initialised = false;
       return false;
     }
   }
 
   // High-resolution oversampling for altitude accuracy
-  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
-                  Adafruit_BMP280::SAMPLING_X16,   // temp
-                  Adafruit_BMP280::SAMPLING_X16,   // pressure
-                  Adafruit_BMP280::FILTER_X16,
-                  Adafruit_BMP280::STANDBY_MS_63);
+  bmp.setSampling(Adafruit_BME280::MODE_NORMAL,
+                  Adafruit_BME280::SAMPLING_X16,   // temp
+                  Adafruit_BME280::SAMPLING_X16,   // pressure
+                  Adafruit_BME280::SAMPLING_X1,    // humidity (unused, keep minimal)
+                  Adafruit_BME280::FILTER_X16,
+                  Adafruit_BME280::STANDBY_MS_62_5);
 
   _initialised = true;
 
@@ -39,7 +40,7 @@ bool baro_init() {
   delay(100);
   for (int i = 0; i < 8; ++i) { (void)bmp.readPressure(); delay(20); }
 
-  Serial.println("[BARO] BMP280 initialised OK (awaiting GPS calibration for absolute altitude)");
+  Serial.println("[BARO] BME280 initialised OK (awaiting GPS calibration for absolute altitude)");
   return true;
 }
 

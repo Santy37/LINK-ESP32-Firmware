@@ -14,9 +14,13 @@ const char* moduleStateStr(ModuleState s);
 
 // IMU reading
 struct ImuData {
-  float heading;   // degrees true-north  (0-360)
+  float heading;   // corrected bearing, degrees clockwise from north (0-360)
   float pitch;     // degrees (-90 … +90)
   float roll;      // degrees (-180 … +180)
+  uint8_t sysCal;  // BNO055 calibration levels: 0=uncalibrated, 3=fully calibrated
+  uint8_t gyroCal;
+  uint8_t accelCal;
+  uint8_t magCal;
   ModuleState state = ModuleState::FAIL;
 };
 

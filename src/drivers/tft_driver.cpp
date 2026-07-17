@@ -127,13 +127,13 @@ void clearAll() {
 //  HOME SCREEN — tactical HUD layout
 //
 //   ┌──────────────────────────────────────────────┐
-//   │ [BT]                                  [BAT]  │  status bar
+//   │ [BT]                                  [GP]  │  status badges
 //   │                                              │
 //   │              9 4 3   .  5                    │  large range
 //   │                METERS                        │
 //   │                                              │
-//   │   PIT   │   ALT   │   BAT                    │  3-col telemetry
-//   │   12°   │  234m   │   85%                    │
+//   │   PIT   │   ALT   │   TMP                    │  3-col telemetry
+//   │   12°   │  234m   │   24C                    │
 //   │ ─────────────────────────────────────────── │  divider
 //   │  | N |  NE  |  E  |  SE |  S |               │  compass ticks
 //   │                  127°                        │  current heading
@@ -156,24 +156,6 @@ void drawGpsIcon(TFT_eSprite& s, int x, int y, bool fix) {
   s.setTextDatum(MC_DATUM);
   s.setTextColor(c, C_BG);
   s.drawString("GP", x + 12, y + 6, 1);
-}
-
-void drawBatteryIcon(TFT_eSprite& s, int x, int y, uint8_t pct) {
-  // Outline + fill in accent (yellow), label in white.
-  uint16_t c = C_ACCENT;
-  // body
-  s.drawRect(x, y, 22, 10, c);
-  // nub on the right
-  s.fillRect(x + 22, y + 3, 2, 4, c);
-  // fill proportional to charge
-  int fillW = (20 * (int)pct) / 100;
-  if (fillW > 0) s.fillRect(x + 1, y + 1, fillW, 8, c);
-  // numeric % to the left of icon
-  char buf[6];
-  snprintf(buf, sizeof(buf), "%d%%", pct);
-  s.setTextDatum(MR_DATUM);
-  s.setTextColor(C_TEXT, C_BG);
-  s.drawString(buf, x - 2, y + 5, 1);
 }
 
 void drawCompassStrip(TFT_eSprite& s, float heading, int yTop) {
@@ -238,8 +220,8 @@ void renderHome(const TelemetrySnapshot& snap,
   homeSpr_.fillSprite(C_BG);
 
   // ── 2) status bar (y 0-12) ─────────────────────────────────
-  drawBleIcon    (homeSpr_, 2,        2, bleConnected);  // GPS box stacked underneath BT
-  drawGpsIcon    (homeSpr_, 2,       16, snap.gnss.fix >= GnssFix::FIX_2D);  drawBatteryIcon(homeSpr_, W - 26,   2, snap.battery);
+  drawBleIcon    (homeSpr_, 2,        2, bleConnected);
+  drawGpsIcon    (homeSpr_, W - 26,   2, snap.gnss.fix >= GnssFix::FIX_2D);
 
   // ── 3) range readout (FONT 4 ≈ 26 px, comfortably sized) ───
   homeSpr_.setTextDatum(TC_DATUM);
@@ -564,6 +546,22 @@ namespace tft {
 bool init() {
   screen_.init();
   screen_.setRotation(cfg::TFT_ROTATION);
+
+  // Reflect the complete framebuffer left-to-right for the HUD combiner.
+  // setRotation() is called first so TFT_eSPI still configures the correct
+  // dimensions and ST7735 panel offsets; only the address direction changes.
+  if (cfg::TFT_MIRROR_HORIZONTAL) {
+    uint8_t madctl;
+    switch (cfg::TFT_ROTATION & 3) {
+      case 0:  madctl = TFT_MAD_MY;                         break;
+      case 1:  madctl = TFT_MAD_MV;                         break;
+      case 2:  madctl = TFT_MAD_MX;                         break;
+      default: madctl = TFT_MAD_MX | TFT_MAD_MY | TFT_MAD_MV; break;
+    }
+    screen_.writecommand(TFT_MADCTL);
+    screen_.writedata(madctl | TFT_MAD_COLOR_ORDER);
+  }
+
   W = screen_.width();
   H = screen_.height();
   screen_.fillScreen(C_BG);

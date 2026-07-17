@@ -14,7 +14,9 @@ struct LatLon {
 };
 
 /*
- Compute the target lat/lon given an observer position, bearing, and range.
+ Compute the target lat/lon given an observer position, true bearing, and
+ horizontal ground range. A slant LiDAR range must be projected with
+ cos(pitch) before calling this function.
  Same formula used on the phone side — results must agree.
  
  Spherical-Earth ("forward geodesic") problem. Treats Earth as a perfect
@@ -40,5 +42,7 @@ inline LatLon destinationPoint(double latDeg, double lonDeg,
   LatLon result;
   result.lat = lat2 * 180.0 / M_PI;
   result.lon = lon2 * 180.0 / M_PI;
+  // Keep longitude valid if this is ever used near the antimeridian.
+  result.lon = fmod(result.lon + 540.0, 360.0) - 180.0;
   return result;
 }

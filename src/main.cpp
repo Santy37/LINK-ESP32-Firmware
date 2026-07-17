@@ -18,6 +18,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <math.h>
 #include "config.h"
 #include "sensor_types.h"
 
@@ -60,8 +61,20 @@
 #include "waypoint.h"
 #include "pin_queue.h"
 // Forward declarations
-void handlePing();
+bool handlePing();
 void retryPendingPins();
+
+// Buzzer helpers (active buzzer, low-level trigger — blocking, short)
+#if HAS_BUZZER
+static inline void buzzerOn()  { digitalWrite(cfg::BUZZER_PIN, cfg::BUZZER_ACTIVE_LOW ? LOW  : HIGH); }
+static inline void buzzerOff() { digitalWrite(cfg::BUZZER_PIN, cfg::BUZZER_ACTIVE_LOW ? HIGH : LOW ); }
+static void buzzerBeep(unsigned long ms) { buzzerOn(); delay(ms); buzzerOff(); }
+static void buzzerSuccess() { buzzerBeep(cfg::BUZZER_BEEP_MS); delay(cfg::BUZZER_BEEP_GAP_MS); buzzerBeep(cfg::BUZZER_BEEP_MS); }
+static void buzzerFail()    { buzzerBeep(cfg::BUZZER_FAIL_MS); }
+#else
+static inline void buzzerSuccess() {}
+static inline void buzzerFail()    {}
+#endif
 // Timing state
 static unsigned long lastSensorRead   = 0;
 static unsigned long lastTelemetrySend = 0;
@@ -91,6 +104,57 @@ static bool          pingHoldConsumed = false;
 
 // Latest sensor snapshot
 static TelemetrySnapshot snap;
+
+// A ping is confirmed over a hold window, so use that window to reduce
+// single-sample compass/range jitter. Heading uses a circular mean so
+// samples around 359°/0° average correctly.
+static float    pingHeadingSinSum = 0.0f;
+static float    pingHeadingCosSum = 0.0f;
+static float    pingPitchSum      = 0.0f;
+static float    pingRangeSum      = 0.0f;
+static uint16_t pingAimSamples    = 0;
+static double   pingLatSum        = 0.0;
+static double   pingLonSum        = 0.0;
+static float    pingAltSum        = 0.0f;
+static uint16_t pingGnssSamples   = 0;
+
+static bool gnssReadyForPing(const GnssData& g) {
+  return g.state == ModuleState::OK &&
+         g.fix >= GnssFix::FIX_3D &&
+         g.sats >= cfg::PING_GNSS_MIN_SATS &&
+         g.accM > 0.0f && g.accM <= cfg::PING_GNSS_MAX_ACC_M;
+}
+
+static void resetPingAverages() {
+  pingHeadingSinSum = 0.0f;
+  pingHeadingCosSum = 0.0f;
+  pingPitchSum      = 0.0f;
+  pingRangeSum      = 0.0f;
+  pingAimSamples    = 0;
+  pingLatSum        = 0.0;
+  pingLonSum        = 0.0;
+  pingAltSum        = 0.0f;
+  pingGnssSamples   = 0;
+}
+
+static void accumulatePingSample() {
+  if (snap.imu.state == ModuleState::OK &&
+      snap.lidar.state == ModuleState::OK && snap.lidar.valid) {
+    float headingRad = snap.imu.heading * (float)M_PI / 180.0f;
+    pingHeadingSinSum += sinf(headingRad);
+    pingHeadingCosSum += cosf(headingRad);
+    pingPitchSum      += snap.imu.pitch;
+    pingRangeSum      += snap.lidar.rangeM;
+    ++pingAimSamples;
+  }
+
+  if (gnssReadyForPing(snap.gnss)) {
+    pingLatSum += snap.gnss.lat;
+    pingLonSum += snap.gnss.lon;
+    pingAltSum += snap.gnss.altM;
+    ++pingGnssSamples;
+  }
+}
 
 // Stub sensor data for modules not connected
 static ImuData   imu_stub()   { ImuData d{}; d.heading=0; d.pitch=0; d.roll=0; d.state=ModuleState::FAIL; return d; }
@@ -141,6 +205,14 @@ void setup() {
   // Ping button (fallback)
   pinMode(cfg::PING_BTN_PIN, INPUT_PULLUP);
 
+  // Active buzzer — start silent
+#if HAS_BUZZER
+  pinMode(cfg::BUZZER_PIN, OUTPUT);
+  buzzerOff();
+  Serial.printf("[BUZ]  pin=%d active-%s\n", cfg::BUZZER_PIN,
+                cfg::BUZZER_ACTIVE_LOW ? "LOW" : "HIGH");
+#endif
+
   // HUD control buttons
 #if HAS_BUTTONS
   pinMode(cfg::BTN_PREV_PIN, INPUT_PULLUP);
@@ -163,6 +235,22 @@ void setup() {
   Wire.setClock(cfg::I2C_FREQ);
   Serial.printf("[I2C]  SDA=%d  SCL=%d  %lukHz\n",
                 cfg::I2C_SDA, cfg::I2C_SCL, cfg::I2C_FREQ / 1000);
+
+  // I²C scanner — quick diagnostic for wiring/pull-up issues.
+  // Expect: 0x28 (BNO055), 0x76 or 0x77 (BME280), and 0x3C if OLED present.
+  {
+    Serial.print("[I2C]  scan:");
+    uint8_t found = 0;
+    for (uint8_t addr = 1; addr < 127; ++addr) {
+      Wire.beginTransmission(addr);
+      if (Wire.endTransmission() == 0) {
+        Serial.printf(" 0x%02X", addr);
+        ++found;
+      }
+    }
+    if (found == 0) Serial.print(" (none — check SDA/SCL wiring + 4.7k pull-ups to 3V3)");
+    Serial.printf("  [%u device%s]\n", found, found == 1 ? "" : "s");
+  }
 
   // OLED display
 #if HAS_OLED
@@ -339,6 +427,8 @@ void loop() {
 #endif
     snap.battery = readBatteryPercent();
 
+  if (pingHoldActive) accumulatePingSample();
+
     // Auto-calibrate baro from GPS altitude when fix is trustworthy.
     // This upgrades baro from "pressure altitude" (± standard atmosphere error)
     // to true MSL altitude.  Baro still works independently if GPS never comes.
@@ -388,37 +478,45 @@ void loop() {
   // 3. HUD buttons: PREV / NEXT cycle pages, PING-hold drops a waypoint.
 #if HAS_BUTTONS
   {
-    // --- Edge-detected page buttons ---------------------------------------
-    // Tactile switches bounce for a few ms on press — a tiny debounce window
-    // catches the first clean LOW and ignores subsequent transitions until
-    // the button is released and re-pressed.
-    static bool prevDown = false;
-    static bool nextDown = false;
-    static unsigned long prevEdgeMs = 0;
-    static unsigned long nextEdgeMs = 0;
-    constexpr unsigned long BTN_DEBOUNCE_MS = 30;
+    // --- Edge-detected page buttons (stable-state debounce) ---------------
+    // Read the raw pin every tick; only commit a state change once the raw
+    // reading has been steady for BTN_DEBOUNCE_MS. Fire the page change on
+    // the committed HIGH→LOW (press) edge so each physical click counts once
+    // no matter how badly the contacts bounce.
+    constexpr unsigned long BTN_DEBOUNCE_MS = 50;
+
+    static bool          prevStable    = false;
+    static bool          prevLastRaw   = false;
+    static unsigned long prevRawSince  = 0;
+    static bool          nextStable    = false;
+    static bool          nextLastRaw   = false;
+    static unsigned long nextRawSince  = 0;
+
+    auto debounce = [&](bool raw,
+                        bool &stable,
+                        bool &lastRaw,
+                        unsigned long &rawSince) -> int {
+      if (raw != lastRaw) {
+        lastRaw  = raw;
+        rawSince = now;
+      }
+      if (raw != stable && (now - rawSince) >= BTN_DEBOUNCE_MS) {
+        stable = raw;
+        return stable ? 1 : -1;   // 1 = press edge, -1 = release edge
+      }
+      return 0;
+    };
 
     bool prevRaw = (digitalRead(cfg::BTN_PREV_PIN) == LOW);
     bool nextRaw = (digitalRead(cfg::BTN_NEXT_PIN) == LOW);
 
-    if (prevRaw && !prevDown && (now - prevEdgeMs) > BTN_DEBOUNCE_MS) {
-      prevDown   = true;
-      prevEdgeMs = now;
+    if (debounce(prevRaw, prevStable, prevLastRaw, prevRawSince) == 1) {
       hudPage = (hudPage - 1 + HUD_PAGE_COUNT) % HUD_PAGE_COUNT;
       Serial.printf("[BTN]  Page ← %d\n", hudPage);
-    } else if (!prevRaw && prevDown) {
-      prevDown   = false;
-      prevEdgeMs = now;
     }
-
-    if (nextRaw && !nextDown && (now - nextEdgeMs) > BTN_DEBOUNCE_MS) {
-      nextDown   = true;
-      nextEdgeMs = now;
+    if (debounce(nextRaw, nextStable, nextLastRaw, nextRawSince) == 1) {
       hudPage = (hudPage + 1) % HUD_PAGE_COUNT;
       Serial.printf("[BTN]  Page → %d\n", hudPage);
-    } else if (!nextRaw && nextDown) {
-      nextDown   = false;
-      nextEdgeMs = now;
     }
 
     // --- Ping button: hold for PING_HOLD_MS -------------------------------
@@ -451,7 +549,7 @@ void loop() {
       // the abort screen instead so the user knows why.
       const char* badNow = nullptr;
       if      (snap.imu.state   != ModuleState::OK) badNow = "IMU";
-      else if (snap.gnss.state  != ModuleState::OK) badNow = "GNSS";
+      else if (!gnssReadyForPing(snap.gnss))        badNow = "GNSS";
       else if (snap.baro.state  != ModuleState::OK) badNow = "BARO";
       else if (snap.lidar.state != ModuleState::OK) badNow = "LIDAR";
       if (badNow) {
@@ -459,6 +557,7 @@ void loop() {
         pingAbortMs      = now;
         pingAbortReason  = badNow;
         pingHoldConsumed = true;
+        buzzerFail();
       } else {
         pingHoldActive    = true;
         pingHoldStart     = now;
@@ -466,6 +565,8 @@ void loop() {
         pingHoldGnssStart  = snap.gnss.state;
         pingHoldBaroStart  = snap.baro.state;
         pingHoldLidarStart = snap.lidar.state;
+        resetPingAverages();
+        accumulatePingSample();
       }
     }
 
@@ -477,7 +578,8 @@ void loop() {
       };
       const char* reason = nullptr;
       if      (degraded(pingHoldImuStart,   snap.imu.state))   reason = "IMU";
-      else if (degraded(pingHoldGnssStart,  snap.gnss.state))  reason = "GNSS";
+      else if (degraded(pingHoldGnssStart,  snap.gnss.state) ||
+           !gnssReadyForPing(snap.gnss))                   reason = "GNSS";
       else if (degraded(pingHoldBaroStart,  snap.baro.state))  reason = "BARO";
       else if (degraded(pingHoldLidarStart, snap.lidar.state)) reason = "LIDAR";
       if (reason) {
@@ -486,6 +588,7 @@ void loop() {
         pingHoldConsumed = true;
         pingAbortMs      = now;
         pingAbortReason  = reason;
+        buzzerFail();
       }
     }
 
@@ -496,9 +599,10 @@ void loop() {
       lastPingMs       = now;
       pingHoldActive   = false;
       pingHoldConsumed = true;
-      handlePing();
-      pingSentMs     = now;
-      pingSentQueued = pinQueue_pendingCount();
+      if (handlePing()) {
+        pingSentMs     = now;
+        pingSentQueued = pinQueue_pendingCount();
+      }
     }
   }
 #else
@@ -524,8 +628,10 @@ void loop() {
     Serial.printf("│ BLE   : %s\n", ble_isConnected() ? "CONNECTED" : "advertising");
     Serial.printf("│ Batt  : %d%%\n", snap.battery);
 #if HAS_IMU
-    Serial.printf("│ IMU   : hdg=%.1f° pit=%.1f° rol=%.1f° [%s]\n",
+    Serial.printf("│ IMU   : hdg=%.1f° pit=%.1f° rol=%.1f° cal=%u/%u/%u/%u [%s]\n",
                   snap.imu.heading, snap.imu.pitch, snap.imu.roll,
+            snap.imu.sysCal, snap.imu.gyroCal,
+            snap.imu.accelCal, snap.imu.magCal,
                   snap.imu.state == ModuleState::OK ? "OK" :
                   snap.imu.state == ModuleState::DEGRADED ? "DEGRADED" : "FAIL");
 #else
@@ -539,6 +645,17 @@ void loop() {
                   gps_charsProcessed(),
                   snap.gnss.state == ModuleState::OK ? "OK" :
                   snap.gnss.state == ModuleState::DEGRADED ? "DEGRADED" : "FAIL");
+    {
+      GnssDiag gd = gnss_getDiag();
+      const char *antenna =
+          gd.maxSnrDbHz == 0 ? "NO SIGNAL" :
+          gd.maxSnrDbHz < 25 ? "WEAK"      :
+          gd.maxSnrDbHz < 35 ? "OK"        :
+          gd.maxSnrDbHz < 42 ? "GOOD"      : "EXCELLENT";
+      Serial.printf("│        view=%u used=%u maxSNR=%udB avgSNR=%udB hdop=%.1f badCRC=%u antenna=%s\n",
+                    gd.satsInView, gd.satsUsed, gd.maxSnrDbHz, gd.avgSnrDbHz,
+                    gd.hdop, gd.failedChecksums, antenna);
+    }
 #else
     Serial.println("│ GNSS  : disabled");
 #endif
@@ -715,28 +832,61 @@ void loop() {
 
 // handlePing — user pressed the ping button
 
-void handlePing() {
+bool handlePing() {
   Serial.println("\n═══ PING BUTTON PRESSED ══════════════════");
 
+  // Freeze one internally consistent capture. Replace the final instantaneous
+  // readings with the means accumulated over the confirmation hold.
+  TelemetrySnapshot pingSnap = snap;
+  if (pingAimSamples > 0) {
+    float avgHeading = atan2f(pingHeadingSinSum, pingHeadingCosSum) *
+                       180.0f / (float)M_PI;
+    if (avgHeading < 0.0f) avgHeading += 360.0f;
+    pingSnap.imu.heading  = avgHeading;
+    pingSnap.imu.pitch    = pingPitchSum / pingAimSamples;
+    pingSnap.lidar.rangeM = pingRangeSum / pingAimSamples;
+  }
+  if (pingGnssSamples > 0) {
+    pingSnap.gnss.lat  = pingLatSum / pingGnssSamples;
+    pingSnap.gnss.lon  = pingLonSum / pingGnssSamples;
+    pingSnap.gnss.altM = pingAltSum / pingGnssSamples;
+  }
+
   // Validate measurements
-  if (snap.gnss.state == ModuleState::FAIL) {
-    Serial.println("[PING] GNSS not available — cannot compute waypoint");
+  if (!gnssReadyForPing(pingSnap.gnss)) {
+    Serial.printf("[PING] GNSS quality insufficient: fix=%d sats=%u acc=%.1fm\n",
+                  (int)pingSnap.gnss.fix, pingSnap.gnss.sats,
+                  pingSnap.gnss.accM);
+    buzzerFail();
 #if HAS_OLED
     if (oledOk) { oled.clearDisplay(); oled.setCursor(0,0); oled.println("PING FAIL"); oled.println("No GPS fix!"); oled.display(); }
 #endif
 #if HAS_TFT
     tft::renderPingFail("No GPS fix!");
 #endif
-    return;
+    return false;
   }
+
+#if HAS_IMU
+  if (pingSnap.imu.state != ModuleState::OK) {
+    Serial.printf("[PING] IMU bearing not calibrated: sys=%u mag=%u\n",
+                  pingSnap.imu.sysCal, pingSnap.imu.magCal);
+    buzzerFail();
+#if HAS_TFT
+    tft::renderPingFail("IMU not calibrated");
+#endif
+    return false;
+  }
+#endif
 
   /* LiDAR: if not connected, use a default range for testing */
 #if HAS_LIDAR
-  if (!snap.lidar.valid) {
+  if (!pingSnap.lidar.valid) {
     Serial.println("[PING] LiDAR reading invalid — cannot compute range");
-    return;
+    buzzerFail();
+    return false;
   }
-  float pingRange = snap.lidar.rangeM;
+  float pingRange = pingSnap.lidar.rangeM;
 #else
   // No LiDAR — use a fixed test range of 100m for demo purposes
   float pingRange = 100.0f;
@@ -745,27 +895,37 @@ void handlePing() {
 
   /* Heading: use IMU if available, otherwise 0° (north) */
 #if HAS_IMU
-  float pingBearing = snap.imu.heading;
+  float pingBearing = pingSnap.imu.heading;
 #else
   float pingBearing = 0.0f;
   Serial.println("[PING] IMU disabled — using 0° (north)");
 #endif
 
+  // LiDAR measures line-of-sight (slant) distance. Latitude/longitude needs
+  // the horizontal component; using the full slant distance over-shoots the
+  // target whenever the binoculars point above or below the horizon.
+  float pitchRad = pingSnap.imu.pitch * (float)M_PI / 180.0f;
+  float horizontalRange = pingRange * cosf(pitchRad);
+  if (horizontalRange < 0.0f) horizontalRange = 0.0f;
+
   // Compute target waypoint
   LatLon target = destinationPoint(
-    snap.gnss.lat, snap.gnss.lon,
+    pingSnap.gnss.lat, pingSnap.gnss.lon,
     pingBearing,
-    pingRange
+    horizontalRange
   );
 
-  Serial.printf("[PING] Observer: (%.7f, %.7f)\n", snap.gnss.lat, snap.gnss.lon);
-  Serial.printf("[PING] Bearing: %.1f°  Range: %.2f m\n",
-                pingBearing, pingRange);
+  Serial.printf("[PING] Averaged samples: aim=%u gnss=%u\n",
+                pingAimSamples, pingGnssSamples);
+  Serial.printf("[PING] Observer: (%.7f, %.7f) ±%.1fm\n",
+                pingSnap.gnss.lat, pingSnap.gnss.lon, pingSnap.gnss.accM);
+  Serial.printf("[PING] Bearing: %.1f°  Pitch: %.1f°  Slant: %.2fm  Ground: %.2fm\n",
+                pingBearing, pingSnap.imu.pitch, pingRange, horizontalRange);
   Serial.printf("[PING] Target:  (%.7f, %.7f)\n", target.lat, target.lon);
 
   // Generate UUID and serialise payload
   String id   = generateUUID();
-  String json = pinPayload_toJson(id, snap, target.lat, target.lon, "Waypoint");
+  String json = pinPayload_toJson(id, pingSnap, target.lat, target.lon, "Waypoint");
 
   // Enqueue locally
   pinQueue_enqueue(id, json);
@@ -779,6 +939,8 @@ void handlePing() {
   }
 
   Serial.printf("[PING] Queue depth: %d\n\n", pinQueue_pendingCount());
+  buzzerSuccess();
+  return true;
 }
 
 // retryPendingPins — resend un-ACK'd pins when phone is connected

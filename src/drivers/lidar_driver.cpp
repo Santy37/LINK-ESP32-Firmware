@@ -316,11 +316,21 @@ LidarData lidar_read() {
 
   drainAndParse();
 
+  uint32_t now = millis();
+
+  // The parser cache otherwise remains valid until the 5-second re-arm
+  // watchdog. Reject it much sooner for waypoint math while still allowing
+  // the longer watchdog to avoid repeatedly restarting the sensor.
+  if (_cached.valid &&
+      (_lastFrameMs == 0 || (now - _lastFrameMs) > cfg::LIDAR_MAX_SAMPLE_AGE_MS)) {
+    _cached.valid = false;
+    _cached.state = ModuleState::DEGRADED;
+  }
+
   // Liveness watchdog: if continuous mode silently stopped (sensor reset,
   // brown-out, glitched config), nudge it back on. Threshold is generous
   // (5 s) so normal "pointing at sky / no target" doesn't trigger — that
   // would otherwise blink the laser visible in an IR viewer.
-  uint32_t now = millis();
   if (_lastFrameMs != 0 && (now - _lastFrameMs) > REARM_TIMEOUT_MS) {
     if ((now - _lastRearmMs) > REARM_TIMEOUT_MS) {
       Serial.println("[LIDAR] no frames for >5s — re-arming continuous mode");

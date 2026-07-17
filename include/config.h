@@ -14,11 +14,32 @@ namespace cfg {
    Disabled modules return stub/simulated data so BLE still works.
  */
 #define HAS_IMU    1    // BNO055 9-DOF — connected (I²C 0x28)
-#define HAS_BARO   1    // BMP280 — connected (I²C 0x76/0x77)
+#define HAS_BARO   1    // BME280 — connected (I²C 0x76/0x77)
 #define HAS_LIDAR  1    // PTYS-12X — connected (UART1)
 #define HAS_GNSS   1    // NEO-M9N GPS — connected
 #define HAS_OLED   0    // SSD1306 128x64 I²C OLED  (legacy — disable when TFT proven)
 #define HAS_TFT    1    // ST7735 1.8" 128x160 RGB TFT (SPI)
+
+/* Aiming calibration
+   BNO055 heading is magnetic north. Convert it to the true bearing used by
+   map coordinates with local magnetic declination (east positive, west
+   negative), then add the fixed IMU-to-LiDAR boresight alignment offset.
+   The declination below is NOAA WMM-2025 for UCF (28.6012, -81.2005) on
+   2026-07-17: -7.0766 degrees (west). Update it if operating elsewhere.
+   Keep the boresight offset separate and tune it only for mounting error.
+ */
+constexpr float IMU_MAG_DECLINATION_DEG = -7.08f;
+constexpr float IMU_HEADING_OFFSET_DEG  = 0.0f;
+constexpr float IMU_PITCH_OFFSET_DEG    = 0.0f;
+constexpr uint8_t IMU_MIN_SYS_CAL       = 1;  // sys=0 has not found magnetic north
+constexpr uint8_t IMU_MIN_MAG_CAL       = 2;  // reject weak/unstable compass calibration
+constexpr uint32_t IMU_CAL_DEGRADE_GRACE_MS = 5000; // ignore brief calibration dips
+
+/* Ping input quality gates. Stale cached data must never produce a waypoint. */
+constexpr uint32_t GNSS_MAX_LOCATION_AGE_MS = 2000;
+constexpr uint8_t  PING_GNSS_MIN_SATS       = 6;
+constexpr float    PING_GNSS_MAX_ACC_M      = 15.0f;
+constexpr uint32_t LIDAR_MAX_SAMPLE_AGE_MS  = 500;
 
 /* GPS-based baro calibration gate.
  Calibration only runs when the GPS fix is confident enough to trust
@@ -71,11 +92,23 @@ constexpr long LIDAR_BAUD = 115200;  // fallback only — see lidar_driver.cpp
 constexpr int BTN_PREV_PIN = 4;        // page --
 constexpr int BTN_NEXT_PIN = 5;        // page ++
 constexpr int BTN_PING_PIN = 7;        // hold to ping
-constexpr unsigned long PING_HOLD_MS = 2500;  // hold duration for ping
+constexpr unsigned long PING_HOLD_MS = 1250;  // 1.25-second hold to confirm ping
 
 // Ping button (legacy — kept as fallback if encoder absent)
 constexpr int PING_BTN_PIN = 0;        // active-LOW (built-in BOOT btn)
 constexpr unsigned long DEBOUNCE_MS = 250;
+
+/* Active buzzer (SMT-0440-T-R via MMBT2222A driver, or a bare 3-pin
+   "low-level trigger" module). Active buzzers have their own oscillator,
+   so we just toggle the pin — no PWM / ledc / tone() needed.
+   The module used here is LOW-triggered: pin LOW → beep, HIGH → silent.
+ */
+#define HAS_BUZZER 1
+constexpr int  BUZZER_PIN         = 13;   // BUZ_CTRL → transistor base
+constexpr bool BUZZER_ACTIVE_LOW  = true; // module beeps when pin is LOW
+constexpr unsigned long BUZZER_BEEP_MS      = 80;   // one short chirp
+constexpr unsigned long BUZZER_BEEP_GAP_MS  = 60;   // gap between chirps
+constexpr unsigned long BUZZER_FAIL_MS      = 300;  // one long error tone
 
 /* Battery ADC
    GPIO 33-37 are used by Octal PSRAM on N32R16V.
@@ -108,7 +141,8 @@ constexpr int  TFT_PIN_RST   = 15;   // reset
 constexpr int  TFT_PIN_BL    = -1;   // backlight tied to 3.3 V
 constexpr int  TFT_W         = 128;
 constexpr int  TFT_H         = 160;
-constexpr int  TFT_ROTATION  = 1;    // 1=landscape (160w x 128h). Use 3 if upside-down.
+constexpr int  TFT_ROTATION  = 3;    // 3=landscape rotated 180 degrees.
+constexpr bool TFT_MIRROR_HORIZONTAL = true;  // Mirror left-to-right for HUD optics.
 
 // BLE
 constexpr const char* BLE_DEVICE_NAME = "LINK-HUD";
