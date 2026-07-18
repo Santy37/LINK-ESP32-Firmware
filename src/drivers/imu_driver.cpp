@@ -10,6 +10,7 @@
 #include "imu_driver.h"
 #include <Adafruit_BNO055.h>
 #include <Wire.h>
+#include <math.h>
 
 static Adafruit_BNO055 bno(55, 0x28, &Wire);  // I²C address 0x28
 static bool _initialised = false;
@@ -83,16 +84,24 @@ ImuData imu_read() {
   d.accelCal = accel;
   d.magCal   = mag;
 
-  // In NDOF mode sys=0 means the fusion has not found magnetic north.
-  // Calibration scores can briefly fluctuate while the unit moves, so once
-  // heading is healthy require a continuous bad interval before degrading.
-  // A good sample recovers immediately. This avoids status/ping flicker but
-  // still rejects a genuinely lost compass after the grace period.
+  sensors_event_t gyroEvent{};
+  bno.getEvent(&gyroEvent, Adafruit_BNO055::VECTOR_GYROSCOPE);
+  float gyroRate = sqrtf(gyroEvent.gyro.x * gyroEvent.gyro.x +
+                         gyroEvent.gyro.y * gyroEvent.gyro.y +
+                         gyroEvent.gyro.z * gyroEvent.gyro.z);
+  bool stationary = gyroRate <= cfg::IMU_STILL_GYRO_MAX_RAD_S;
+
+  // Calibration confidence often falls after a calibrated unit is placed on
+  // a stationary mount, especially near tripod hardware. Preserve the last
+  // known-good state while still, but never bypass initial calibration. Once
+  // moving, continuously bad calibration still degrades after the grace time.
   bool calibrationGood = sys >= cfg::IMU_MIN_SYS_CAL &&
                          mag >= cfg::IMU_MIN_MAG_CAL;
   uint32_t now = millis();
   if (calibrationGood) {
     _calibrationHealthy = true;
+    _calibrationBadSince = 0;
+  } else if (_calibrationHealthy && stationary) {
     _calibrationBadSince = 0;
   } else if (_calibrationHealthy) {
     if (_calibrationBadSince == 0) {

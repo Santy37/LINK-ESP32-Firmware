@@ -46,19 +46,18 @@ constexpr int HEADER_H = 12;       // slim title + state-badge boxes
 constexpr int LINE_H   = 14;       // height of a body text line (FONT 2)
 constexpr int BODY_Y0  = HEADER_H + 2;
 
-// 16-bit RGB565 colours.  The display has no backlight-control pin
-// (TFT_BL=-1), so panel brightness is fixed at hardware max — we get
-// "brighter" UI by avoiding low-luminance shades.  C_DIM is therefore
-// repurposed to bright red, which both reads at a glance and matches
-// the red-on-black tactical-HUD aesthetic the user requested.
+// 16-bit RGB565 colours. The display has no backlight-control pin
+// (TFT_BL=-1), so panel brightness is fixed at hardware max. Saturated green
+// is used for normal symbology because the eye is most sensitive near this
+// wavelength in daylight and green is unchanged by RGB/BGR panel ordering.
 constexpr uint16_t C_BG       = TFT_BLACK;
-constexpr uint16_t C_HEADER   = TFT_WHITE;  // header bar background
-constexpr uint16_t C_TEXT     = TFT_WHITE;
-constexpr uint16_t C_DIM      = TFT_RED;    // ← was 0x8410 grey; now bright red
+constexpr uint16_t C_HEADER   = TFT_GREEN;
+constexpr uint16_t C_TEXT     = TFT_GREEN;
+constexpr uint16_t C_DIM      = 0x03E0;     // half-intensity green
 constexpr uint16_t C_OK       = TFT_GREEN;
 constexpr uint16_t C_WARN     = TFT_YELLOW;
 constexpr uint16_t C_FAIL     = TFT_RED;
-constexpr uint16_t C_ACCENT   = TFT_CYAN;
+constexpr uint16_t C_ACCENT   = TFT_GREEN;
 
 uint16_t stateColor(ModuleState s) {
   switch (s) {
@@ -141,20 +140,20 @@ void clearAll() {
 // ─────────────────────────────────────────────────────────────────
 
 void drawBleIcon(TFT_eSprite& s, int x, int y, bool connected) {
-  // Connected = yellow accent, disconnected = white (was blue).
-  uint16_t c = connected ? C_ACCENT : C_TEXT;
-  s.drawRoundRect(x, y, 24, 12, 2, c);
+  // Solid green = connected; solid red = disconnected.
+  uint16_t c = connected ? C_OK : C_FAIL;
+  s.fillRoundRect(x, y, 24, 12, 2, c);
   s.setTextDatum(MC_DATUM);
-  s.setTextColor(c, C_BG);
+  s.setTextColor(C_BG, c);
   s.drawString("BT", x + 12, y + 6, 1);
 }
 
 void drawGpsIcon(TFT_eSprite& s, int x, int y, bool fix) {
-  // Connected/fix = yellow accent, no fix = white outline.
-  uint16_t c = fix ? C_ACCENT : C_TEXT;
-  s.drawRoundRect(x, y, 24, 12, 2, c);
+  // Solid green = position fix; solid red = no fix.
+  uint16_t c = fix ? C_OK : C_FAIL;
+  s.fillRoundRect(x, y, 24, 12, 2, c);
   s.setTextDatum(MC_DATUM);
-  s.setTextColor(c, C_BG);
+  s.setTextColor(C_BG, c);
   s.drawString("GP", x + 12, y + 6, 1);
 }
 
@@ -306,12 +305,12 @@ void renderHome(const TelemetrySnapshot& snap,
 // ─────────────────────────────────────────────────────────────────
 
 // Top-row UI: two outlined rounded boxes — left holds the sensor name in
-// white, right holds the OK/DEGRADED/FAIL badge in green/yellow/red.  No
+// green, right holds the OK/DEGRADED/FAIL badge in green/yellow/red. No
 // solid fills, matches the home-page BT/GP icon style.
 void drawDetailHeader(const char* title, ModuleState st) {
   const int titleW = 48;
   const int badgeW = 52;
-  // Title box (white outline, white text)
+  // Title box (daylight-green outline and text)
   homeSpr_.drawRoundRect(0, 0, titleW, HEADER_H, 2, C_HEADER);
   homeSpr_.setTextDatum(MC_DATUM);
   homeSpr_.setTextColor(C_HEADER, C_BG);
@@ -357,7 +356,7 @@ void drawHeroDeg(int deg, const char* unit, int yTop, uint8_t font = 4) {
   homeSpr_.drawString(unit, cx, yTop + unitDy, 1);
 }
 
-// 2-column stat grid: label small (white) over value (yellow, FONT 2).
+// 2-column stat grid: label small over a larger value.
 void drawStat2Col(const char* lblL, const char* valL,
                   const char* lblR, const char* valR, int yTop) {
   int qW = W / 4;
@@ -614,7 +613,7 @@ void renderBootSplash() {
 
   homeSpr_.fillSprite(C_BG);
 
-  // Decorative top/bottom hairlines in cyan-rendered-yellow accent.
+  // Decorative top/bottom hairlines in daylight green.
   homeSpr_.drawFastHLine(8, 8,    W - 16, C_ACCENT);
   homeSpr_.drawFastHLine(8, H - 9, W - 16, C_ACCENT);
 

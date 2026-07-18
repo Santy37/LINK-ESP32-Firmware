@@ -34,6 +34,7 @@ constexpr float IMU_PITCH_OFFSET_DEG    = 0.0f;
 constexpr uint8_t IMU_MIN_SYS_CAL       = 1;  // sys=0 has not found magnetic north
 constexpr uint8_t IMU_MIN_MAG_CAL       = 2;  // reject weak/unstable compass calibration
 constexpr uint32_t IMU_CAL_DEGRADE_GRACE_MS = 5000; // ignore brief calibration dips
+constexpr float IMU_STILL_GYRO_MAX_RAD_S = 0.035f;  // about 2 deg/s; hold good calibration at rest
 
 /* Ping input quality gates. Stale cached data must never produce a waypoint. */
 constexpr uint32_t GNSS_MAX_LOCATION_AGE_MS = 2000;
